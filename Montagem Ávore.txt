@@ -1,0 +1,32 @@
+Select Tb1.Nome, tb3.sal
+From Tb1
+Join Tb2 on tb1.pk = tb2.fk
+Join tb3 on tb2.pk = tb3.fk
+Where tb1.id > 300 and tb3.sal <> 0
+
+Passo 1
+------------ Heurística Junção
+Pi Tb1.Nome, tb3.sal ( Sigma tb1.id > 300 ^ tb3.sal <> 0 (((Tb1 |X| Tb1.pk = tb2.fk Tb2) |X| tb2.pk = tb3.fk Tb3)))
+
+Passso 2 
+------------ Heurística da redução de tuplas
+Pi Tb1.Nome, tb3.sal ( ((( (Sigma tb1.id > 300(Tb1)) |X| Tb1.pk = tb2.fk Tb2) |X| tb2.pk = tb3.fk (Sigma tb3.sal <> 0 (Tb3)))))
+
+Passso 3 
+------------ Heurística da redução de campos
+Pi Tb1.Nome, tb3.sal ( ((( (Pi Pk, nome(Sigma tb1.id > 300(Tb1))) |X| Tb1.pk = tb2.fk (Pi Pk,fk(Tb2))) |X| tb2.pk = tb3.fk (Pi Sal, fk((Sigma tb3.sal <> 0 (Tb3)))))))
+
+Passo 4 
+------------ montar árvore
+
+                Pi Tb1.Nome, tb3.sal
+                         |
+                 |X| tb2.pk = tb3.fk 
+                 /               \
+     |X| Tb1.pk = tb2.fk          |
+           /        \             |
+   Pi Pk, nome     Pi Pk,fk    Pi Sal, fk 
+         |             |            |
+Sigma tb1.id > 300    Tb2     Sigma tb3.sal <> 0
+         |                          |
+        Tb1                        Tb3

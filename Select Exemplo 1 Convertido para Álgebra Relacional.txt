@@ -1,0 +1,30 @@
+Select cliente.nome, pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido
+from Cliente Join pedido on cliente.idcliente = pedido.Cliente_idCliente
+where cliente.TipoCliente_idTipoCliente = 1 and pedido.ValorTotalPedido = 0;
+
+       
+π cliente.nome, pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido (σ cliente.TipoCliente_idTipoCliente = 1 ^ pedido.ValorTotalPedido = 0 (Cliente |X| cliente.idcliente = pedido.Cliente_idCliente Pedido))
+
+Heurística da Redução de Tuplas
+Aplicar quaisquer restrições a cada tabela como primeira operação
+
+
+π cliente.nome, pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido ( (
+(σ cliente.TipoCliente_idTipoCliente = 1 (Cliente)) |X| cliente.idcliente = pedido.Cliente_idCliente ( σ pedido.ValorTotalPedido = 0 (Pedido))))
+
+Heurística da redução de campos
+Devo ver todos os campos necessários para a consulta e limitar a eles com projeções após as seleções.
+
+π cliente.nome, pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido ( (
+( π cliente.nome, cliente.idcliente(σ cliente.TipoCliente_idTipoCliente = 1 (Cliente))) |X| cliente.idcliente = pedido.Cliente_idCliente 
+( π pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido,pedido.Cliente_idCliente ( σ pedido.ValorTotalPedido = 0 (Pedido)))))
+
+       π cliente.nome, pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido
+                                            |
+                      |X| cliente.idcliente = pedido.Cliente_idCliente 
+                        /                                \
+ π cliente.nome, cliente.idclient                 π pedido.idPedido, pedido.DataPedido, pedido.ValorTotalPedido,pedido.Cliente_idCliente
+                 |                                                                        |
+σ cliente.TipoCliente_idTipoCliente = 1                                    σ pedido.ValorTotalPedido = 0
+                 |                                                                        |
+              Cliente                                                                  Pedido

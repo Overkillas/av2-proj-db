@@ -1,0 +1,8 @@
+# Processador de Consultas SQL - Dependências
+#
+# Tkinter já vem incluso no Python padrão (não precisa instalar).
+# Nenhuma dependência externa é necessária para funcionar.
+#
+# Dependências opcionais (para funcionalidades extras):
+# graphviz>=0.20    # Renderização de grafos em imagem (opcional)
+# Pillow>=10.0      # Exibição de imagens no Tkinter (opcional)
