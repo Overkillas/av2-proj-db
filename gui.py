@@ -23,26 +23,51 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, font as tkfont
 
 from schema import SCHEMA
-from sql_parser import SQLParser, ParsedQuery
+from sql_parser import (
+    SQLParser, ParsedQuery,
+    UnknownTableError, InvalidOperatorError, SQLValidationError,
+)
 from relational_algebra import RelationalAlgebraConverter
 from optimizer import QueryOptimizer
 from query_tree import QueryTree, TreeNode, NodeType
 from execution_plan import ExecutionPlanGenerator
 
 
+# ---------------------------------------------------------------------------
+# Paleta de cores do tema (azul-escuro moderno)
+# ---------------------------------------------------------------------------
+
+THEME = {
+    "bg":            "#1E293B",   # fundo principal (slate-800)
+    "bg_panel":      "#273548",   # painel interno
+    "bg_input":      "#0F172A",   # fundo do editor de SQL (slate-900)
+    "bg_output":     "#F8FAFC",   # fundo das áreas de resultado
+    "fg":            "#E2E8F0",   # texto principal claro
+    "fg_muted":      "#94A3B8",   # texto secundário
+    "fg_dark":       "#1E293B",   # texto escuro (sobre fundo claro)
+    "accent":        "#38BDF8",   # ciano/azul primário
+    "accent_hover":  "#0EA5E9",
+    "accent_dark":   "#0369A1",
+    "danger":        "#EF4444",
+    "success":       "#22C55E",
+    "warning":       "#F59E0B",
+    "border":        "#334155",
+    "canvas_bg":     "#FAFAFA",
+}
+
 # Cores para os nós da árvore no Canvas
 NODE_COLORS = {
-    NodeType.TABLE: "#FFFACD",       # amarelo claro
-    NodeType.SELECTION: "#ADD8E6",   # azul claro
-    NodeType.PROJECTION: "#90EE90",  # verde claro
-    NodeType.JOIN: "#FFA07A",        # salmão
+    NodeType.TABLE: "#FEF3C7",       # amarelo pastel
+    NodeType.SELECTION: "#DBEAFE",   # azul pastel
+    NodeType.PROJECTION: "#DCFCE7",  # verde pastel
+    NodeType.JOIN: "#FEE2E2",        # rosa/salmão pastel
 }
 
 NODE_BORDER_COLORS = {
-    NodeType.TABLE: "#DAA520",
-    NodeType.SELECTION: "#4682B4",
-    NodeType.PROJECTION: "#228B22",
-    NodeType.JOIN: "#CD5C5C",
+    NodeType.TABLE: "#D97706",
+    NodeType.SELECTION: "#2563EB",
+    NodeType.PROJECTION: "#16A34A",
+    NodeType.JOIN: "#DC2626",
 }
 
 
@@ -201,90 +226,220 @@ class ProcessadorConsultasGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Processador de Consultas SQL")
-        self.root.geometry("1100x800")
-        self.root.minsize(900, 650)
+        self.root.geometry("1200x850")
+        self.root.minsize(960, 680)
+        self.root.configure(bg=THEME["bg"])
 
-        # Configurar estilo
+        self._configure_style()
+        self._create_widgets()
+
+    # -------------------------------------------------------------------
+    # Estilo / Tema
+    # -------------------------------------------------------------------
+
+    def _configure_style(self):
+        """Configura o estilo ttk do aplicativo (tema moderno escuro)."""
         style = ttk.Style()
         style.theme_use("clam")
 
-        self._create_widgets()
+        bg = THEME["bg"]
+        bg_panel = THEME["bg_panel"]
+        fg = THEME["fg"]
+        fg_muted = THEME["fg_muted"]
+        accent = THEME["accent"]
+        accent_hover = THEME["accent_hover"]
+        accent_dark = THEME["accent_dark"]
+        border = THEME["border"]
+
+        # Frames e labels base
+        style.configure("TFrame", background=bg)
+        style.configure("Panel.TFrame", background=bg_panel)
+        style.configure("TLabel", background=bg, foreground=fg,
+                        font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background=bg, foreground=fg_muted,
+                        font=("Segoe UI", 9))
+        style.configure("Header.TLabel", background=bg, foreground=fg,
+                        font=("Segoe UI Semibold", 18))
+        style.configure("Subheader.TLabel", background=bg, foreground=fg_muted,
+                        font=("Segoe UI", 10))
+
+        # LabelFrame
+        style.configure("Card.TLabelframe", background=bg_panel,
+                        foreground=fg, bordercolor=border, borderwidth=1,
+                        relief="solid")
+        style.configure("Card.TLabelframe.Label", background=bg_panel,
+                        foreground=accent, font=("Segoe UI Semibold", 10))
+
+        # Botão primário
+        style.configure("Primary.TButton",
+                        background=accent, foreground=THEME["fg_dark"],
+                        font=("Segoe UI Semibold", 10),
+                        padding=(16, 8), borderwidth=0, focusthickness=0)
+        style.map("Primary.TButton",
+                  background=[("active", accent_hover), ("pressed", accent_dark)],
+                  foreground=[("active", THEME["fg_dark"])])
+
+        # Botão secundário
+        style.configure("Secondary.TButton",
+                        background=bg_panel, foreground=fg,
+                        font=("Segoe UI", 10),
+                        padding=(14, 8), borderwidth=1,
+                        bordercolor=border, focusthickness=0)
+        style.map("Secondary.TButton",
+                  background=[("active", border)],
+                  foreground=[("active", fg)])
+
+        # Notebook (abas)
+        style.configure("TNotebook", background=bg, borderwidth=0,
+                        tabmargins=(2, 4, 2, 0))
+        style.configure("TNotebook.Tab",
+                        background=bg_panel, foreground=fg_muted,
+                        padding=(18, 8), font=("Segoe UI", 10),
+                        borderwidth=0)
+        style.map("TNotebook.Tab",
+                  background=[("selected", accent), ("active", border)],
+                  foreground=[("selected", THEME["fg_dark"]),
+                              ("active", fg)])
+
+        # Barra de status
+        style.configure("Status.TLabel", background=bg_panel, foreground=fg,
+                        font=("Segoe UI", 9), padding=(12, 6))
+        style.configure("StatusError.TLabel", background=bg_panel,
+                        foreground=THEME["danger"], font=("Segoe UI Semibold", 9),
+                        padding=(12, 6))
+        style.configure("StatusOK.TLabel", background=bg_panel,
+                        foreground=THEME["success"], font=("Segoe UI Semibold", 9),
+                        padding=(12, 6))
+
+        # Scrollbar
+        style.configure("Vertical.TScrollbar",
+                        background=bg_panel, troughcolor=bg,
+                        bordercolor=bg, arrowcolor=fg_muted)
+        style.configure("Horizontal.TScrollbar",
+                        background=bg_panel, troughcolor=bg,
+                        bordercolor=bg, arrowcolor=fg_muted)
 
     def _create_widgets(self):
         """Cria todos os widgets da interface."""
 
+        # ====== Cabeçalho ======
+        header = ttk.Frame(self.root, style="TFrame")
+        header.pack(fill=tk.X, padx=20, pady=(18, 4))
+
+        ttk.Label(
+            header,
+            text="⚙  Processador de Consultas SQL",
+            style="Header.TLabel",
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(
+            header,
+            text="SQL → Álgebra Relacional → Otimização → Plano de Execução",
+            style="Subheader.TLabel",
+        ).pack(side=tk.RIGHT, pady=(6, 0))
+
+        # Linha divisória
+        sep = tk.Frame(self.root, bg=THEME["border"], height=1)
+        sep.pack(fill=tk.X, padx=20, pady=(0, 12))
+
         # ====== Frame Superior: Entrada SQL ======
-        input_frame = ttk.LabelFrame(self.root, text="  Consulta SQL  ", padding=10)
-        input_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
+        input_frame = ttk.LabelFrame(
+            self.root, text="  Consulta SQL  ",
+            style="Card.TLabelframe", padding=14,
+        )
+        input_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+
+        # Editor de SQL (visual de "code editor")
+        editor_wrapper = tk.Frame(input_frame, bg=THEME["border"], bd=0)
+        editor_wrapper.pack(fill=tk.X, pady=(0, 12))
 
         self.sql_input = scrolledtext.ScrolledText(
-            input_frame, height=6, font=("Consolas", 11),
-            wrap=tk.WORD, bg="#FAFAFA",
+            editor_wrapper, height=7, font=("Consolas", 11),
+            wrap=tk.WORD,
+            bg=THEME["bg_input"], fg="#E2E8F0",
+            insertbackground=THEME["accent"],
+            selectbackground=THEME["accent_dark"],
+            selectforeground="#FFFFFF",
+            relief=tk.FLAT, padx=12, pady=10,
+            borderwidth=0,
         )
-        self.sql_input.pack(fill=tk.X, pady=(0, 8))
+        self.sql_input.pack(fill=tk.X, padx=1, pady=1)
         self.sql_input.insert("1.0", self.EXEMPLO_SQL)
 
-        # Frame de botões
-        btn_frame = ttk.Frame(input_frame)
+        # Aplicar syntax highlighting simples
+        self._setup_sql_highlighting()
+        self._highlight_sql()
+        self.sql_input.bind("<KeyRelease>", lambda e: self._highlight_sql())
+
+        # Frame de botões + info
+        btn_frame = ttk.Frame(input_frame, style="Panel.TFrame")
         btn_frame.pack(fill=tk.X)
 
         self.btn_process = ttk.Button(
-            btn_frame, text="  Processar Consulta  ",
+            btn_frame, text="▶  Processar Consulta",
+            style="Primary.TButton",
             command=self._on_process,
         )
-        self.btn_process.pack(side=tk.LEFT, padx=(0, 5))
-
-        self.btn_clear = ttk.Button(
-            btn_frame, text="  Limpar  ",
-            command=self._on_clear,
-        )
-        self.btn_clear.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_process.pack(side=tk.LEFT, padx=(0, 8))
 
         self.btn_example = ttk.Button(
-            btn_frame, text="  Exemplo  ",
+            btn_frame, text="Carregar Exemplo",
+            style="Secondary.TButton",
             command=self._on_example,
         )
-        self.btn_example.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_example.pack(side=tk.LEFT, padx=(0, 8))
 
-        # Label com tabelas disponíveis
+        self.btn_clear = ttk.Button(
+            btn_frame, text="Limpar",
+            style="Secondary.TButton",
+            command=self._on_clear,
+        )
+        self.btn_clear.pack(side=tk.LEFT, padx=(0, 8))
+
+        # Label com tabelas/operadores suportados (lado direito)
+        info_frame = ttk.Frame(btn_frame, style="Panel.TFrame")
+        info_frame.pack(side=tk.RIGHT)
+
         tables_str = ", ".join(sorted(SCHEMA.keys()))
-        ttk.Label(
-            btn_frame,
+        tk.Label(
+            info_frame,
+            text=f"Operadores: =  >  <  <=  >=  <>  AND  ( )",
+            bg=THEME["bg_panel"], fg=THEME["accent"],
+            font=("Consolas", 9),
+        ).pack(anchor="e")
+        tk.Label(
+            info_frame,
             text=f"Tabelas: {tables_str}",
-            font=("Segoe UI", 8), foreground="#666666",
-        ).pack(side=tk.RIGHT)
+            bg=THEME["bg_panel"], fg=THEME["fg_muted"],
+            font=("Segoe UI", 8), wraplength=560, justify="right",
+        ).pack(anchor="e", pady=(2, 0))
 
         # ====== Frame Inferior: Resultados (Notebook com abas) ======
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 6))
 
         # Aba 1: Álgebra Relacional
-        self.tab_algebra = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_algebra, text="  Álgebra Relacional  ")
-        self.txt_algebra = scrolledtext.ScrolledText(
-            self.tab_algebra, font=("Consolas", 11), wrap=tk.WORD,
-            state=tk.DISABLED, bg="#FDFDFD",
-        )
-        self.txt_algebra.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.tab_algebra = ttk.Frame(self.notebook, style="TFrame")
+        self.notebook.add(self.tab_algebra, text="  📐  Álgebra Relacional  ")
+        self.txt_algebra = self._make_output_text(self.tab_algebra)
 
         # Aba 2: Otimização
-        self.tab_optim = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_optim, text="  Otimização  ")
-        self.txt_optim = scrolledtext.ScrolledText(
-            self.tab_optim, font=("Consolas", 11), wrap=tk.WORD,
-            state=tk.DISABLED, bg="#FDFDFD",
-        )
-        self.txt_optim.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.tab_optim = ttk.Frame(self.notebook, style="TFrame")
+        self.notebook.add(self.tab_optim, text="  ⚡  Otimização  ")
+        self.txt_optim = self._make_output_text(self.tab_optim)
 
         # Aba 3: Grafo de Operadores
-        self.tab_graph = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_graph, text="  Grafo de Operadores  ")
+        self.tab_graph = ttk.Frame(self.notebook, style="TFrame")
+        self.notebook.add(self.tab_graph, text="  🌳  Grafo de Operadores  ")
 
         # Canvas com scrollbars para o grafo
-        graph_container = ttk.Frame(self.tab_graph)
-        graph_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        graph_container = ttk.Frame(self.tab_graph, style="TFrame")
+        graph_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        self.canvas = tk.Canvas(graph_container, bg="white")
+        self.canvas = tk.Canvas(
+            graph_container, bg=THEME["canvas_bg"],
+            highlightthickness=1, highlightbackground=THEME["border"],
+        )
         scrollbar_x = ttk.Scrollbar(graph_container, orient=tk.HORIZONTAL, command=self.canvas.xview)
         scrollbar_y = ttk.Scrollbar(graph_container, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(xscrollcommand=scrollbar_x.set, yscrollcommand=scrollbar_y.set)
@@ -294,30 +449,94 @@ class ProcessadorConsultasGUI:
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Aba 4: Plano de Execução
-        self.tab_plan = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_plan, text="  Plano de Execução  ")
-        self.txt_plan = scrolledtext.ScrolledText(
-            self.tab_plan, font=("Consolas", 11), wrap=tk.WORD,
-            state=tk.DISABLED, bg="#FDFDFD",
-        )
-        self.txt_plan.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.tab_plan = ttk.Frame(self.notebook, style="TFrame")
+        self.notebook.add(self.tab_plan, text="  📋  Plano de Execução  ")
+        self.txt_plan = self._make_output_text(self.tab_plan)
+
+        # Aba 5: Árvore Texto
+        self.tab_tree_text = ttk.Frame(self.notebook, style="TFrame")
+        self.notebook.add(self.tab_tree_text, text="  🧾  Árvore (Texto)  ")
+        self.txt_tree = self._make_output_text(self.tab_tree_text, wrap=tk.NONE)
 
         # ====== Barra de Status ======
-        self.status_var = tk.StringVar(value="Pronto. Digite uma consulta SQL e clique em 'Processar Consulta'.")
-        status_bar = ttk.Label(
-            self.root, textvariable=self.status_var, relief=tk.SUNKEN,
-            anchor=tk.W, padding=(10, 4),
-        )
-        status_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=(0, 10))
+        status_wrap = tk.Frame(self.root, bg=THEME["bg_panel"])
+        status_wrap.pack(fill=tk.X, side=tk.BOTTOM)
 
-        # Aba 5: Árvore Texto (representação textual da árvore)
-        self.tab_tree_text = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_tree_text, text="  Árvore (Texto)  ")
-        self.txt_tree = scrolledtext.ScrolledText(
-            self.tab_tree_text, font=("Consolas", 11), wrap=tk.NONE,
-            state=tk.DISABLED, bg="#FDFDFD",
+        tk.Frame(status_wrap, bg=THEME["border"], height=1).pack(fill=tk.X)
+
+        self.status_var = tk.StringVar(
+            value="Pronto. Digite uma consulta SQL e clique em ‘Processar Consulta’."
         )
-        self.txt_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.status_label = ttk.Label(
+            status_wrap, textvariable=self.status_var,
+            style="Status.TLabel", anchor=tk.W,
+        )
+        self.status_label.pack(fill=tk.X)
+
+    # -------------------------------------------------------------------
+    # Helpers de construção
+    # -------------------------------------------------------------------
+
+    def _make_output_text(self, parent, wrap=tk.WORD) -> scrolledtext.ScrolledText:
+        """Cria um widget de texto de resultado com estilo padrão."""
+        widget = scrolledtext.ScrolledText(
+            parent, font=("Consolas", 11), wrap=wrap,
+            state=tk.DISABLED,
+            bg=THEME["bg_output"], fg=THEME["fg_dark"],
+            insertbackground=THEME["accent"],
+            selectbackground="#BAE6FD",
+            selectforeground=THEME["fg_dark"],
+            relief=tk.FLAT, padx=14, pady=12,
+            borderwidth=0,
+        )
+        widget.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        return widget
+
+    # -------------------------------------------------------------------
+    # Syntax highlighting (leve) do editor SQL
+    # -------------------------------------------------------------------
+
+    _SQL_KEYWORDS = ("SELECT", "FROM", "WHERE", "JOIN", "ON", "AND")
+
+    def _setup_sql_highlighting(self):
+        self.sql_input.tag_configure(
+            "kw", foreground="#38BDF8", font=("Consolas", 11, "bold")
+        )
+        self.sql_input.tag_configure("str", foreground="#FCD34D")
+        self.sql_input.tag_configure("num", foreground="#A78BFA")
+        self.sql_input.tag_configure("op", foreground="#F472B6")
+
+    def _highlight_sql(self):
+        import re
+        text = self.sql_input.get("1.0", tk.END)
+
+        for tag in ("kw", "str", "num", "op"):
+            self.sql_input.tag_remove(tag, "1.0", tk.END)
+
+        # Palavras-chave
+        for kw in self._SQL_KEYWORDS:
+            for m in re.finditer(rf"\b{kw}\b", text, re.IGNORECASE):
+                start = f"1.0 + {m.start()} chars"
+                end = f"1.0 + {m.end()} chars"
+                self.sql_input.tag_add("kw", start, end)
+
+        # Strings
+        for m in re.finditer(r"'[^']*'", text):
+            self.sql_input.tag_add(
+                "str", f"1.0 + {m.start()} chars", f"1.0 + {m.end()} chars"
+            )
+
+        # Números
+        for m in re.finditer(r"\b\d+(?:\.\d+)?\b", text):
+            self.sql_input.tag_add(
+                "num", f"1.0 + {m.start()} chars", f"1.0 + {m.end()} chars"
+            )
+
+        # Operadores
+        for m in re.finditer(r"<=|>=|<>|[=<>]", text):
+            self.sql_input.tag_add(
+                "op", f"1.0 + {m.start()} chars", f"1.0 + {m.end()} chars"
+            )
 
     # -------------------------------------------------------------------
     # Callbacks
@@ -330,14 +549,13 @@ class ProcessadorConsultasGUI:
         """
         sql = self.sql_input.get("1.0", tk.END).strip()
         if not sql:
-            self.status_var.set("Erro: Consulta SQL vazia.")
+            self._set_status("Erro: consulta SQL vazia.", kind="error")
             return
 
         try:
             # 1) PARSING E VALIDAÇÃO
             parser = SQLParser()
             parsed = parser.parse(sql)
-            self.status_var.set("Consulta parseada e validada com sucesso.")
 
             # 2) CONVERSÃO PARA ÁLGEBRA RELACIONAL
             converter = RelationalAlgebraConverter(parsed)
@@ -360,32 +578,103 @@ class ProcessadorConsultasGUI:
             plan_text = planner.format_plan()
             self._display_plan(plan_text)
 
-            self.status_var.set("Processamento concluído com sucesso.")
+            self._set_status("✓ Processamento concluído com sucesso.", kind="ok")
             self.notebook.select(0)  # Ir para primeira aba
 
-        except ValueError as e:
-            self.status_var.set("Erro de validação (veja detalhes abaixo).")
+        except UnknownTableError as e:
+            # Erro específico de tabela inexistente
+            self._set_status(
+                f"✗ Tabela inexistente: '{e.table_name}'.", kind="error",
+            )
             self._clear_results()
-            self._set_text(self.txt_algebra, f"ERRO DE VALIDAÇÃO:\n\n{str(e)}")
+            body = (
+                f"❌ TABELA NÃO ENCONTRADA\n\n"
+                f"A tabela \"{e.table_name}\" não existe no schema.\n\n"
+                f"Tabelas disponíveis:\n"
+                f"  • " + "\n  • ".join(sorted(e.available_tables))
+            )
+            self._set_text(self.txt_algebra, body)
+            messagebox.showerror("Tabela inexistente", str(e))
+
+        except InvalidOperatorError as e:
+            self._set_status("✗ Operador ou palavra-chave inválida.", kind="error")
+            self._clear_results()
+            body = (
+                f"❌ OPERADOR / PALAVRA-CHAVE INVÁLIDA\n\n"
+                f"{str(e)}\n\n"
+                f"Símbolos suportados: =, >, <, <=, >=, <>, AND, ( )"
+            )
+            self._set_text(self.txt_algebra, body)
+            messagebox.showerror("Operador inválido", str(e))
+
+        except SQLValidationError as e:
+            self._set_status("✗ Erro de validação.", kind="error")
+            self._clear_results()
+            self._set_text(self.txt_algebra, f"❌ ERRO DE VALIDAÇÃO\n\n{str(e)}")
+            messagebox.showerror("Erro de Validação", str(e))
+
+        except ValueError as e:
+            self._set_status("✗ Erro de validação.", kind="error")
+            self._clear_results()
+            self._set_text(self.txt_algebra, f"❌ ERRO DE VALIDAÇÃO\n\n{str(e)}")
             messagebox.showerror("Erro de Validação", str(e))
 
         except Exception as e:
-            self.status_var.set(f"Erro inesperado: {type(e).__name__}")
+            self._set_status(f"✗ Erro inesperado: {type(e).__name__}", kind="error")
             self._clear_results()
-            self._set_text(self.txt_algebra, f"ERRO INESPERADO:\n\n{type(e).__name__}: {str(e)}")
+            self._set_text(
+                self.txt_algebra,
+                f"❌ ERRO INESPERADO\n\n{type(e).__name__}: {str(e)}",
+            )
             messagebox.showerror("Erro", f"{type(e).__name__}: {str(e)}")
+
+    def _set_status(self, text: str, kind: str = "info"):
+        """Atualiza o status bar com estilo conforme o tipo (info/ok/error)."""
+        self.status_var.set(text)
+        style_map = {
+            "ok": "StatusOK.TLabel",
+            "error": "StatusError.TLabel",
+            "info": "Status.TLabel",
+        }
+        self.status_label.configure(style=style_map.get(kind, "Status.TLabel"))
 
     def _on_clear(self):
         """Limpa a entrada e os resultados."""
         self.sql_input.delete("1.0", tk.END)
         self._clear_results()
-        self.status_var.set("Pronto.")
+        self._highlight_sql()
+        self._set_status("Pronto.", kind="info")
 
     def _on_example(self):
         """Carrega a consulta de exemplo."""
         self.sql_input.delete("1.0", tk.END)
         self.sql_input.insert("1.0", self.EXEMPLO_SQL)
-        self.status_var.set("Exemplo carregado. Clique em 'Processar Consulta'.")
+        self._highlight_sql()
+        self._set_status(
+            "Exemplo carregado. Clique em ‘Processar Consulta’.", kind="info",
+        )
+
+    # -------------------------------------------------------------------
+    # Exibição de resultados
+    # -------------------------------------------------------------------
+
+    # -------------------------------------------------------------------
+    # Helpers de formatação
+    # -------------------------------------------------------------------
+
+    _BOX_WIDTH = 68
+
+    def _box_header(self, title: str) -> list[str]:
+        w = self._BOX_WIDTH
+        inner = w - 2
+        top = "╔" + "═" * inner + "╗"
+        mid = "║" + title.center(inner) + "║"
+        bot = "╚" + "═" * inner + "╝"
+        return [top, mid, bot]
+
+    def _section(self, title: str) -> list[str]:
+        line = "─" * self._BOX_WIDTH
+        return ["", line, f"  ▸ {title}", line]
 
     # -------------------------------------------------------------------
     # Exibição de resultados
@@ -394,52 +683,44 @@ class ProcessadorConsultasGUI:
     def _display_algebra(self, expression: str, parsed: ParsedQuery):
         """Exibe a álgebra relacional na aba correspondente."""
         text = []
-        text.append("=" * 60)
-        text.append("  CONVERSÃO SQL  →  ÁLGEBRA RELACIONAL")
-        text.append("=" * 60)
+        text += self._box_header("CONVERSÃO SQL  →  ÁLGEBRA RELACIONAL")
+
+        text += self._section("SQL Original")
+        for line in parsed.original_sql.splitlines():
+            text.append(f"    {line}")
+
+        text += self._section("Álgebra Relacional (conversão direta)")
         text.append("")
-        text.append("SQL Original:")
-        text.append(f"  {parsed.original_sql}")
+        text.append(f"    {expression}")
         text.append("")
-        text.append("─" * 60)
-        text.append("")
-        text.append("Álgebra Relacional (conversão direta):")
-        text.append("")
-        text.append(f"  {expression}")
-        text.append("")
-        text.append("─" * 60)
-        text.append("")
-        text.append("Detalhes do parsing:")
-        text.append(f"  Tabelas envolvidas: {', '.join(parsed.all_tables_original.values())}")
-        text.append(f"  Número de JOINs:    {len(parsed.joins)}")
-        text.append(f"  Condições WHERE:    {len(parsed.where_conditions)}")
-        text.append(f"  Colunas SELECT:     {len(parsed.select_columns)}")
+
+        text += self._section("Resumo do parsing")
+        text.append(f"    Tabelas envolvidas : {', '.join(parsed.all_tables_original.values())}")
+        text.append(f"    Número de JOINs    : {len(parsed.joins)}")
+        text.append(f"    Condições WHERE    : {len(parsed.where_conditions)}")
+        text.append(f"    Colunas SELECT     : {len(parsed.select_columns)}")
 
         self._set_text(self.txt_algebra, "\n".join(text))
 
     def _display_optimization(self, original_expr: str, steps: list):
         """Exibe os passos de otimização na aba correspondente."""
         text = []
-        text.append("=" * 60)
-        text.append("  OTIMIZAÇÃO DA CONSULTA")
-        text.append("=" * 60)
+        text += self._box_header("OTIMIZAÇÃO DA CONSULTA")
+
+        text += self._section("Expressão original (antes da otimização)")
         text.append("")
-        text.append("Expressão original (antes da otimização):")
-        text.append(f"  {original_expr}")
-        text.append("")
+        text.append(f"    {original_expr}")
 
         for i, step in enumerate(steps, 1):
-            text.append("─" * 60)
+            text += self._section(f"PASSO {i} — {step.name}")
             text.append("")
-            text.append(f"PASSO {i} — {step.name}")
+            text.append(f"    {step.description}")
             text.append("")
-            text.append(f"  {step.description}")
-            text.append("")
-            text.append("  Resultado:")
-            text.append(f"  {step.expression}")
-            text.append("")
+            text.append("    Resultado:")
+            text.append(f"    {step.expression}")
 
-        text.append("─" * 60)
+        text.append("")
+        text.append("─" * self._BOX_WIDTH)
 
         self._set_text(self.txt_optim, "\n".join(text))
 
@@ -451,20 +732,17 @@ class ProcessadorConsultasGUI:
 
         # Exibir representação textual na aba de texto
         tree_text = []
-        tree_text.append("=" * 60)
-        tree_text.append("  ÁRVORE DE OPERADORES (GRAFO OTIMIZADO)")
-        tree_text.append("=" * 60)
-        tree_text.append("")
-        tree_text.append("Legenda:")
-        tree_text.append("  Tabela    → Nó folha (tabela base)")
-        tree_text.append("  σ (sigma) → Seleção (filtro de tuplas)")
-        tree_text.append("  π (pi)    → Projeção (filtro de colunas)")
-        tree_text.append("  ⋈ (join)  → Junção")
-        tree_text.append("")
-        tree_text.append("Árvore:")
+        tree_text += self._box_header("ÁRVORE DE OPERADORES (GRAFO OTIMIZADO)")
+
+        tree_text += self._section("Legenda")
+        tree_text.append("    Tabela    →  nó folha (tabela base)")
+        tree_text.append("    σ (sigma) →  seleção (filtro de tuplas)")
+        tree_text.append("    π (pi)    →  projeção (filtro de colunas)")
+        tree_text.append("    ⋈ (join)  →  junção")
+
+        tree_text += self._section("Árvore")
         tree_text.append("")
         tree_text.append(tree.to_text())
-        tree_text.append("")
 
         self._set_text(self.txt_tree, "\n".join(tree_text))
 
