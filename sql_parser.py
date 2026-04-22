@@ -14,7 +14,33 @@ Operadores válidos: =, >, <, <=, >=, <>, AND, ( )
 
 import re
 from dataclasses import dataclass, field
-from schema import SCHEMA, table_exists, column_exists, resolve_column, get_table_columns
+from schema import SCHEMA, table_exists, column_exists, resolve_column, get_table_columns, get_all_table_names
+
+
+# ---------------------------------------------------------------------------
+# Exceções específicas
+# ---------------------------------------------------------------------------
+
+class SQLValidationError(ValueError):
+    """Erro genérico de validação de SQL."""
+    pass
+
+
+class UnknownTableError(SQLValidationError):
+    """Tabela referenciada não existe no schema."""
+    def __init__(self, table_name: str, available_tables: list[str]):
+        self.table_name = table_name
+        self.available_tables = available_tables
+        msg = (
+            f"Tabela '{table_name}' não existe no schema.\n"
+            f"Tabelas disponíveis: {', '.join(sorted(available_tables))}"
+        )
+        super().__init__(msg)
+
+
+class InvalidOperatorError(SQLValidationError):
+    """Operador ou palavra-chave inválida (ex.: 'ANDDD', 'WHER')."""
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +94,55 @@ KEYWORDS = {"SELECT", "FROM", "WHERE", "JOIN", "ON", "AND"}
 
 # Operadores válidos
 VALID_OPERATORS = {"=", ">", "<", "<=", ">=", "<>"}
+
+# Texto exibido ao usuário com operadores/palavras-chave suportados
+SUPPORTED_SYMBOLS_TEXT = "=, >, <, <=, >=, <>, AND, ( )"
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Distância de edição entre duas strings (para detectar typos)."""
+    a, b = a.upper(), b.upper()
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur.append(min(cur[-1] + 1, prev[j] + 1, prev[j - 1] + cost))
+        prev = cur
+    return prev[-1]
+
+
+def _looks_like_keyword(identifier: str) -> str | None:
+    """
+    Se o identificador parece uma palavra-chave mal digitada, retorna qual.
+    Exemplos: 'WHER' -> 'WHERE', 'ANDDD' -> 'AND', 'JON' -> 'JOIN',
+              'SELCT' -> 'SELECT', 'OR' -> 'ON' (operador não suportado).
+    """
+    up = identifier.upper()
+    if up in KEYWORDS:
+        return None  # já é a própria palavra-chave
+
+    # 1) Match por substring/prefixo: ex. 'ANDDD' contém 'AND'
+    for kw in KEYWORDS:
+        if kw in up and abs(len(up) - len(kw)) <= 3:
+            return kw
+
+    # 2) Match por distância de edição (typos clássicos)
+    for kw in KEYWORDS:
+        dist = _levenshtein(up, kw)
+        if dist == 0:
+            continue
+        max_dist = 2 if len(kw) >= 5 else 1
+        if dist <= max_dist:
+            return kw
+
+    return None
 
 # Padrão regex para tokenização
 TOKEN_PATTERN = re.compile(
@@ -154,6 +229,11 @@ class SQLParser:
         if not tokens:
             raise ValueError("Não foi possível tokenizar a consulta SQL.")
 
+        # Detectar palavras-chave mal digitadas (WHER, ANDDD, JON, SELCT, etc.)
+        self._check_keyword_typos(tokens)
+        if self.errors:
+            raise InvalidOperatorError("\n".join(self.errors))
+
         # Verificar que começa com SELECT
         if tokens[0] != ("KEYWORD", "SELECT"):
             self.errors.append("A consulta deve começar com SELECT.")
@@ -187,14 +267,16 @@ class SQLParser:
 
         all_tables = list(all_tables_original.keys())
 
+        # Validar tabelas contra o schema ANTES de validar colunas:
+        # se a tabela não existe o erro de coluna seria acessório.
+        # _validate_tables lança UnknownTableError diretamente.
+        self._validate_tables(all_tables, all_tables_original)
+
         # Parsear colunas do SELECT
         select_columns = self._parse_select_columns(select_tokens, all_tables)
 
         # Parsear condições do WHERE
         where_conditions = self._parse_where(where_tokens, all_tables)
-
-        # Validar tabelas contra o schema
-        self._validate_tables(all_tables, all_tables_original)
 
         # Validar colunas contra o schema
         self._validate_columns(select_columns)
@@ -204,7 +286,16 @@ class SQLParser:
             self._validate_condition_columns(cond)
 
         if self.errors:
-            raise ValueError("\n".join(self.errors))
+            msg = "\n".join(self.errors)
+            # Se algum dos erros menciona operador/token inesperado, classificar
+            # como InvalidOperatorError para o front-end exibir mensagem específica.
+            lowered = msg.lower()
+            if any(k in lowered for k in (
+                "operador", "token", "palavra-chave",
+                "inválido", "inesperado",
+            )):
+                raise InvalidOperatorError(msg)
+            raise SQLValidationError(msg)
 
         return ParsedQuery(
             select_columns=select_columns,
@@ -216,6 +307,38 @@ class SQLParser:
             all_tables_original=all_tables_original,
             original_sql=original_sql,
         )
+
+    # -------------------------------------------------------------------
+    # Detecção de palavras-chave / operadores mal digitados
+    # -------------------------------------------------------------------
+
+    def _check_keyword_typos(self, tokens):
+        """
+        Percorre os tokens procurando identificadores (IDs) que se parecem
+        com palavras-chave mal digitadas (WHER, ANDDD, JON, SELCT, FRM...).
+
+        Só considera suspeitos os IDs que não são seguidos de '.' (i.e., que
+        não fazem parte de um nome de coluna qualificado tipo 'tabela.coluna').
+        """
+        for i, (ttype, tval) in enumerate(tokens):
+            if ttype != "ID":
+                continue
+
+            # Se o próximo token é '.', então é um nome de tabela qualificado,
+            # não uma palavra-chave mal digitada.
+            # (Na prática o tokenizer já capta 'tabela.coluna' como DOTTED,
+            #  mas mantemos a checagem por robustez.)
+            next_tok = tokens[i + 1] if i + 1 < len(tokens) else None
+            if next_tok and next_tok[0] == "OP" and next_tok[1] == ".":
+                continue
+
+            suggested = _looks_like_keyword(tval)
+            if suggested is not None:
+                self.errors.append(
+                    f"Palavra-chave ou operador inválido: '{tval}'. "
+                    f"Você quis dizer '{suggested}'? "
+                    f"Símbolos suportados: {SUPPORTED_SYMBOLS_TEXT}."
+                )
 
     # -------------------------------------------------------------------
     # Métodos auxiliares de extração de tokens
@@ -298,8 +421,25 @@ class SQLParser:
             return ("", "")
 
         # O FROM deve ter exatamente um identificador (nome da tabela)
+        if from_tokens[0][0] not in ("ID", "DOTTED"):
+            self.errors.append(
+                f"Esperado nome de tabela após FROM, encontrado: '{from_tokens[0][1]}'."
+            )
+            return ("", "")
+
         table_original = from_tokens[0][1]
         table_normalized = table_original.lower()
+
+        # Tokens extras após o nome da tabela indicam palavras inválidas
+        # (ex.: "FROM Cliente WHER ..." onde WHER foi digitado errado).
+        extras = [v for _, v in from_tokens[1:]]
+        if extras:
+            self.errors.append(
+                f"Tokens inesperados após a tabela '{table_original}' no FROM: "
+                f"{' '.join(extras)}. Verifique se há palavras-chave mal "
+                f"digitadas (WHERE, JOIN, etc.)."
+            )
+
         return (table_original, table_normalized)
 
     def _parse_join(self, table_tokens, cond_tokens, all_tables_original):
@@ -308,9 +448,23 @@ class SQLParser:
             self.errors.append("JOIN sem nome de tabela.")
             return None
 
+        if table_tokens[0][0] not in ("ID", "DOTTED"):
+            self.errors.append(
+                f"Esperado nome de tabela após JOIN, encontrado: '{table_tokens[0][1]}'."
+            )
+            return None
+
         table_original = table_tokens[0][1]
         table_normalized = table_original.lower()
         all_tables_original[table_normalized] = table_original
+
+        # Tokens extras após o nome da tabela (antes do ON)
+        extras = [v for _, v in table_tokens[1:]]
+        if extras:
+            self.errors.append(
+                f"Tokens inesperados após a tabela '{table_original}' no JOIN: "
+                f"{' '.join(extras)}."
+            )
 
         # Parsear condição do ON
         condition = self._parse_single_condition(cond_tokens, list(all_tables_original.keys()))
@@ -435,7 +589,25 @@ class SQLParser:
 
         # Validar operador
         if operator not in VALID_OPERATORS:
-            self.errors.append(f"Operador inválido: '{operator}'. Válidos: {VALID_OPERATORS}")
+            self.errors.append(
+                f"Operador inválido: '{operator}'. "
+                f"Operadores suportados: {SUPPORTED_SYMBOLS_TEXT}."
+            )
+
+        # Rejeitar tokens extras no lado direito. Isso captura casos como
+        # "X = 0 ANDDD Y = 1": depois do '0' o parser esperava um AND ou o
+        # fim da condição, não um identificador solto.
+        if len(right_tokens) > 1:
+            extras = [v for _, v in right_tokens[1:]]
+            # Se o primeiro token extra parece uma keyword mal digitada,
+            # a checagem em _check_keyword_typos já reportou — evitar duplicar.
+            first_extra = right_tokens[1][1] if right_tokens[1:] else ""
+            if _looks_like_keyword(first_extra) is None:
+                self.errors.append(
+                    f"Tokens inesperados após '{right_tokens[0][1]}' na condição: "
+                    f"{' '.join(extras)}. "
+                    f"Símbolos suportados: {SUPPORTED_SYMBOLS_TEXT}."
+                )
 
         # Parsear lado esquerdo (deve ser coluna)
         left_ref = self._resolve_column_ref(left_tokens, all_tables)
@@ -484,11 +656,16 @@ class SQLParser:
     # -------------------------------------------------------------------
 
     def _validate_tables(self, tables, tables_original):
-        """Valida se todas as tabelas existem no schema."""
+        """
+        Valida se todas as tabelas existem no schema.
+
+        Lança UnknownTableError imediatamente para a primeira tabela
+        desconhecida (erro específico e distinto dos demais).
+        """
         for table in tables:
             if not table_exists(table):
                 orig = tables_original.get(table, table)
-                self.errors.append(f"Tabela '{orig}' não existe no schema.")
+                raise UnknownTableError(orig, get_all_table_names())
 
     def _validate_columns(self, columns: list[ColumnRef]):
         """Valida se todas as colunas do SELECT existem no schema."""
