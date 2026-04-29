@@ -73,7 +73,8 @@ NODE_BORDER_COLORS = {
 
 class TreeDrawer:
     """
-    Desenha a árvore de operadores em um Canvas Tkinter.
+    Desenha a árvore de operadores em um Canvas Tkinter com suporte a
+    arrastar nós interativamente.
 
     Algoritmo de layout:
     - Folhas recebem posições x sequenciais (0, 1, 2, ...)
@@ -92,12 +93,16 @@ class TreeDrawer:
         self.root = root_node
         self.positions: dict[int, tuple[float, float]] = {}
         self._leaf_counter = 0
+        self._node_items: dict[int, list] = {}       # id(node) -> [canvas item ids]
+        self._node_by_item: dict[int, int] = {}      # canvas item id -> id(node)
 
     def draw(self):
         """Calcula o layout e desenha a árvore no Canvas."""
         self.canvas.delete("all")
         self.positions = {}
         self._leaf_counter = 0
+        self._node_items = {}
+        self._node_by_item = {}
 
         if self.root is None:
             return
@@ -120,6 +125,9 @@ class TreeDrawer:
         self._draw_nodes(self.root)
 
         # 5) Ajustar scroll region
+        self._update_scrollregion()
+
+    def _update_scrollregion(self):
         all_x = [p[0] for p in self.positions.values()]
         all_y = [p[1] for p in self.positions.values()]
         if all_x and all_y:
@@ -144,7 +152,7 @@ class TreeDrawer:
         self.positions[id(node)] = (avg_x, depth)
 
     def _draw_edges(self, node: TreeNode):
-        """Desenha linhas do nó pai para cada filho."""
+        """Desenha linhas do nó pai para cada filho, com tag 'edge'."""
         if id(node) not in self.positions:
             return
         px, py = self.positions[id(node)]
@@ -155,14 +163,23 @@ class TreeDrawer:
                 self.canvas.create_line(
                     px, py + 20, cx, cy - 20,
                     fill="#555555", width=2, arrow=tk.LAST,
+                    tags=("edge",),
                 )
             self._draw_edges(child)
 
+    def _redraw_edges(self):
+        """Remove e redesenha todas as arestas."""
+        self.canvas.delete("edge")
+        self._draw_edges(self.root)
+
     def _draw_nodes(self, node: TreeNode):
-        """Desenha um nó como retângulo arredondado com texto."""
+        """Desenha um nó como retângulo arredondado com texto e tags."""
         if id(node) not in self.positions:
             return
         x, y = self.positions[id(node)]
+        nid = id(node)
+        node_tag = f"node_{nid}"
+        items = []
 
         label = node.label
         fill_color = NODE_COLORS.get(node.node_type, "#FFFFFF")
@@ -181,13 +198,11 @@ class TreeDrawer:
         else:
             w, h = 60, 18
 
-        # Retângulo arredondado (simulado com oval + retângulo)
         x1, y1 = x - w, y - h
         x2, y2 = x + w, y + h
-        r = 8  # raio de arredondamento
+        r = 8
 
-        # Desenhar retângulo arredondado usando polígono
-        self.canvas.create_polygon(
+        poly_id = self.canvas.create_polygon(
             x1 + r, y1,  x2 - r, y1,
             x2, y1,  x2, y1 + r,
             x2, y2 - r,  x2, y2,
@@ -195,17 +210,44 @@ class TreeDrawer:
             x1, y2,  x1, y2 - r,
             x1, y1 + r,  x1, y1,
             fill=fill_color, outline=border_color, width=2, smooth=True,
+            tags=(node_tag, "node"),
         )
+        items.append(poly_id)
 
-        # Texto do nó
-        self.canvas.create_text(
+        txt_id = self.canvas.create_text(
             x, y, text=label, anchor="center",
             font=("Consolas", 9), fill="#222222",
+            tags=(node_tag, "node"),
         )
+        items.append(txt_id)
 
-        # Recursão para filhos
+        self._node_items[nid] = items
+        for item_id in items:
+            self._node_by_item[item_id] = nid
+
         for child in node.children:
             self._draw_nodes(child)
+
+    # ------------------------------------------------------------------
+    # API para interação (drag & drop de nós)
+    # ------------------------------------------------------------------
+
+    def get_node_at(self, cx: float, cy: float) -> int | None:
+        """Retorna id(node) se houver um nó nas coordenadas de canvas (cx, cy)."""
+        items = self.canvas.find_overlapping(cx - 2, cy - 2, cx + 2, cy + 2)
+        for item in reversed(items):          # topo do Z-order primeiro
+            if item in self._node_by_item:
+                return self._node_by_item[item]
+        return None
+
+    def move_node(self, nid: int, dx: float, dy: float):
+        """Move um nó e redesenha as arestas."""
+        if nid not in self.positions:
+            return
+        px, py = self.positions[nid]
+        self.positions[nid] = (px + dx, py + dy)
+        self.canvas.move(f"node_{nid}", dx, dy)
+        self._redraw_edges()
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +489,16 @@ class ProcessadorConsultasGUI:
         scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
         scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Dica de interação
+        tk.Label(
+            self.tab_graph,
+            text="⟵ arrastar nó  |  botão direito: mover visão  |  scroll: zoom vertical  |  Shift+scroll: horizontal",
+            bg=THEME["bg"], fg=THEME["fg_muted"],
+            font=("Segoe UI", 8),
+        ).pack(side=tk.BOTTOM, anchor="w", padx=12, pady=(0, 4))
+
+        self._setup_graph_interactions()
 
         # Aba 4: Plano de Execução
         self.tab_plan = ttk.Frame(self.notebook, style="TFrame")
@@ -726,9 +778,9 @@ class ProcessadorConsultasGUI:
 
     def _display_tree(self, tree: QueryTree, root_node: TreeNode):
         """Exibe o grafo de operadores (Canvas visual + texto)."""
-        # Desenhar no Canvas
         drawer = TreeDrawer(self.canvas, root_node)
         drawer.draw()
+        self._current_drawer = drawer
 
         # Exibir representação textual na aba de texto
         tree_text = []
@@ -766,6 +818,83 @@ class ProcessadorConsultasGUI:
         for widget in (self.txt_algebra, self.txt_optim, self.txt_plan, self.txt_tree):
             self._set_text(widget, "")
         self.canvas.delete("all")
+
+    # -------------------------------------------------------------------
+    # Interações do canvas de grafo
+    # -------------------------------------------------------------------
+
+    def _setup_graph_interactions(self):
+        """Registra os bindings de mouse no canvas do grafo."""
+        self._current_drawer: TreeDrawer | None = None
+        self._drag_state = {"node_id": None, "last_x": 0.0, "last_y": 0.0}
+
+        # Arrastar nó (botão esquerdo)
+        self.canvas.bind("<ButtonPress-1>", self._graph_press)
+        self.canvas.bind("<B1-Motion>", self._graph_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._graph_release)
+
+        # Cursor indicativo ao passar sobre nó
+        self.canvas.bind("<Motion>", self._graph_motion)
+
+        # Panorâmica (botão direito)
+        self.canvas.bind("<ButtonPress-3>", self._pan_start)
+        self.canvas.bind("<B3-Motion>", self._pan_drag)
+        self.canvas.bind("<ButtonRelease-3>", self._pan_end)
+
+        # Scroll vertical e horizontal
+        self.canvas.bind("<MouseWheel>", self._scroll_y)
+        self.canvas.bind("<Shift-MouseWheel>", self._scroll_x)
+
+    def _graph_press(self, event):
+        if self._current_drawer is None:
+            return
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        nid = self._current_drawer.get_node_at(cx, cy)
+        self._drag_state["node_id"] = nid
+        self._drag_state["last_x"] = cx
+        self._drag_state["last_y"] = cy
+        if nid is not None:
+            self.canvas.config(cursor="fleur")
+
+    def _graph_drag(self, event):
+        if self._current_drawer is None or self._drag_state["node_id"] is None:
+            return
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        dx = cx - self._drag_state["last_x"]
+        dy = cy - self._drag_state["last_y"]
+        self._current_drawer.move_node(self._drag_state["node_id"], dx, dy)
+        self._drag_state["last_x"] = cx
+        self._drag_state["last_y"] = cy
+
+    def _graph_release(self, event):
+        self._drag_state["node_id"] = None
+        self.canvas.config(cursor="")
+
+    def _graph_motion(self, event):
+        if self._current_drawer is None or self._drag_state["node_id"] is not None:
+            return
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        nid = self._current_drawer.get_node_at(cx, cy)
+        self.canvas.config(cursor="fleur" if nid is not None else "")
+
+    def _pan_start(self, event):
+        self.canvas.scan_mark(event.x, event.y)
+        self.canvas.config(cursor="hand2")
+
+    def _pan_drag(self, event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def _pan_end(self, event):
+        self.canvas.config(cursor="")
+
+    def _scroll_y(self, event):
+        self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+    def _scroll_x(self, event):
+        self.canvas.xview_scroll(-1 * (event.delta // 120), "units")
 
     def run(self):
         """Inicia o loop principal da interface gráfica."""
